@@ -24,8 +24,8 @@ class RK4_high_order(SolverBase):
     仅限于输出为q_ori, dq_ori, lam的情况
     """
 
-    def __init__(self, func, t0, t1, dt, y0, *args, **kwargs):
-        super(RK4_high_order, self).__init__(func, t0, t1, dt, y0, *args, **kwargs)
+    def __init__(self,  *args, **kwargs):
+        super(RK4_high_order, self)
 
     def step_with_lam(self, func, t0, y0, dt, dof, *args, **kwargs):
         q_ori, dq_ori, lam = torch.tensor_split(y0, (dof, dof * 2), dim=-1)

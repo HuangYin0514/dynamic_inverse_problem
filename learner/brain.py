@@ -95,6 +95,7 @@ class TrainingManager:
         """
         # Create a directory to store model training files
         output_dir = self.result_dir
+
         model_output_dir = os.path.join(output_dir, "training_file")
         if os.path.exists(model_output_dir):
             shutil.rmtree(model_output_dir)
@@ -137,26 +138,27 @@ class TrainingManager:
                     )
                     loss_temp_list.append(loss.detach().clone().cpu())
 
-                    if sum((yi[0, 0:3] - yi[0, 15:18]) * (yi[0, 12:15] - yi[0, 3:6])) < 0:  # 16与52的夹角
-                        print('stop time is ', (ti+dt).cpu().detach().numpy())
+                    if (
+                        sum((yi[0, 0:3] - yi[0, 15:18]) * (yi[0, 12:15] - yi[0, 3:6]))
+                        < 0
+                    ):  # 16与52的夹角
+                        print("stop time is ", (ti + dt).cpu().detach().numpy())
                         break
-                    
-                    if error < 1e-5:
+
+                    if error < 1e-2:
                         F_temp_list.append(F)
                         yi_next = yi.detach().clone()
-                        ti = (ti+dt).detach().clone()
+                        ti = (ti + dt).detach().clone()
                         self.logger.debug(ti.detach().clone().cpu().numpy())
                         continue
                     else:
                         if torch.any(torch.isnan(loss)):
                             self.encounter_nan = True
                             raise RuntimeError("Encountering nan, stop training")
-                                            
+
                         self.optimizer_instance.zero_grad()
                         loss.backward()
                         self.optimizer_instance.step()
-                    
-                np.save("F_dict11111.bk", F_temp_list)
 
                 if self.config.optimizer == "adam_LBFGS":
                     if iter > self.config.optimize_next_iterations:
@@ -187,13 +189,8 @@ class TrainingManager:
             )
             torch.save(self.model.state_dict(), model_path)
 
-
-
-
-            # # LR step ---------------------------------------------------------------
-            # if self.scheduler_instance is not None:
-            #     if iter < self.config.optimize_next_iterations:
-            #         self.scheduler_instance.step()
+            F_path = os.path.join(self.result_dir, "F_dict_1e_2.pkl")
+            np.save(F_path, F_temp_list)
 
         self.results["loss_history"] = np.array(loss_history)
 

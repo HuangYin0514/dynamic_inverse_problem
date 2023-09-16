@@ -63,7 +63,6 @@ optimize_next_iterations = 2900
 print_every = 500
 
 
-
 lambda_len = 10 + 19 * unitnum  # 105
 
 height = (l[0] ** 2 - l[1] ** 2) ** 0.5  # 折叠状态单个剪叉单元高度

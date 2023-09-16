@@ -167,9 +167,7 @@ class PINN_F(nn.Module):
         F = self.right_term_net.f_net.F_f(ti)
 
         yi = self.rk4_high_order.step_with_lam(func, ti, y0, dt, dof=dof)
-
         q_hat, qt_hat, lambdas = torch.tensor_split(yi, (dof, dof * 2), dim=-1)
-
         loss_res = torch.mean((qt_hat[:, -1] - 0.3) ** 2)
 
         error = torch.abs(qt_hat[:, -1] - 0.3)
