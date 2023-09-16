@@ -4,10 +4,10 @@
 ################################
 # dataset
 ################################
-# python ./task/generate.py --config_file configs/generate_data/scissor_space_deployable/config_generate_data_rk4.py
 # python ./task/generate.py --config_file configs/generate_data/scissor_space_deployable/config_generate_data.py
 
 ################################
 # network
 ################################
-python ./task/train.py --config_file configs/train/scissor_space_deployable/config_pinn.py
+python ./task/train.py --config_file configs/train/scissor_space_deployable/config_pinn_f.py
+# python ./task/train.py --config_file configs/train/scissor_space_deployable/config_pinn_f.py

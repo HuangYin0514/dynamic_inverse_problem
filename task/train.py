@@ -19,6 +19,7 @@ def train_model_with_config(config, logger, result_dir):
     # Get data using provided data configuration
     data = ln.data.get_data(config=config, logger=logger)
 
+    # return 
     # Create the neural network model using provided model configuration
     neural_net = ln.nn.get_model(config=config, logger=logger)
 

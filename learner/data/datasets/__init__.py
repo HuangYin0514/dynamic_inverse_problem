@@ -1,12 +1,12 @@
 # encoding: utf-8
 
 from .dynamic_data import DynamicData
+from .dynamic_data_uniform_speed import DynamicData_UniformSpeed
 from .dynamic_dataset import DynamicDataset
-from .dynamic_rnn_data import DynamicRnnData
 
 __dataset_factory = {
     "DynamicData": DynamicData,
-    "DynamicRnnData": DynamicRnnData,
+    "DynamicData_UniformSpeed": DynamicData_UniformSpeed,
 }
 
 

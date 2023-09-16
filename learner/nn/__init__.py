@@ -2,18 +2,11 @@ import os
 
 from utils import count_parameters, load_network
 
-from .baseline import Baseline
-from .pi_r_nn import PIRNN
-from .pinn import PINN
-from .pinn_two_input_port import PINN_two_input_port
+from .pinn_f import PINN_F
 
 __model_factory = {
-    "PINN": PINN,
-    "Baseline": Baseline,
-    "PIRNN": PIRNN,
-    "PINN_two_input_port": PINN_two_input_port,
+    "PINN_F": PINN_F,
 }
-
 
 def choose_model(net_name, *args, **kwargs):
     if net_name not in __model_factory.keys():

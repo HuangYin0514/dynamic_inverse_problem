@@ -8,6 +8,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+
+from integrator import ODEIntegrate
+from utils import batched_jacobian, initialize_class, tensors_to_numpy
+from integrator import RK4, RK4_high_order
+from tqdm import tqdm
+
+
 from learner.metric.dynamics_metric import (
     calculate_dynamics_metrics,
     plot_dynamics_metrics,
@@ -15,6 +22,58 @@ from learner.metric.dynamics_metric import (
 from utils import batched_jacobian, initialize_class, tensors_to_numpy
 
 from .utils_nn import MLPBlock, SinActivation
+
+
+#######################################################################
+#
+# force F function
+#
+#######################################################################
+class F_Net(nn.Module):
+    def __init__(self, config, logger):
+        super(F_Net, self).__init__()
+
+        self.device = config.device
+        self.dtype = config.dtype
+
+        self.unitnum = config.unitnum
+        self.F_a = config.F_a
+        # self.F_f = config.F_f
+        self.F_r = config.F_r
+
+        self.F_f = BackboneNet(config)
+
+        self.logger = logger
+
+    # Compute the force F(t, coords)
+    def forward(self, t, coords):
+        bs, num_states = coords.shape
+        t = t.reshape(-1, 1)
+        F = torch.zeros(
+            bs, 12 * (self.unitnum + 1), device=self.device, dtype=self.dtype
+        )
+
+        F_f = self.F_f(t)
+
+        self.logger.debug(F_f)
+        F[:, 0:1] = -self.F_a * F_f
+        F[:, 1:2] = self.F_a * F_f
+
+        F[:, 3:4] = -self.F_a * F_f
+        F[:, 4:5] = -self.F_a * F_f
+
+        F[:, 6:7] = self.F_a * F_f
+        F[:, 7:8] = -self.F_a * F_f
+
+        F[:, 9:10] = self.F_a * F_f
+        F[:, 10:11] = self.F_a * F_f
+
+        F[:, 12 * self.unitnum + 2] = -self.F_r
+        F[:, 12 * self.unitnum + 5] = -self.F_r
+        F[:, 12 * self.unitnum + 8] = -self.F_r
+        F[:, 12 * self.unitnum + 11] = -self.F_r
+
+        return F
 
 
 class BackboneNet(nn.Module):
@@ -38,7 +97,9 @@ class BackboneNet(nn.Module):
         output_dim = config.BackboneNet_output_dim
         layers_num = config.BackboneNet_layers_num
 
-        activation = SinActivation()
+        # activation = SinActivation()
+        # activation = nn.ELU()
+        activation = nn.LeakyReLU()
 
         # Input layer
         input_layer = MLPBlock(input_dim, hidden_dim, activation)
@@ -73,9 +134,9 @@ class BackboneNet(nn.Module):
         return out
 
 
-class PIRNN(nn.Module):
+class PINN_F(nn.Module):
     def __init__(self, config, logger, *args, **kwargs):
-        super(PIRNN, self).__init__()
+        super(PINN_F, self).__init__()
 
         self.config = config
         self.logger = logger
@@ -83,79 +144,50 @@ class PIRNN(nn.Module):
         self.device = config.device
         self.dtype = config.dtype
 
-        self.backboneNet = BackboneNet(config)
+        self.f_net = F_Net(config, logger)
 
         try:
             class_name = self.config.dynamic_class
             kwargs = {"config": config, "logger": logger}
             self.right_term_net = initialize_class("dynamics", class_name, **kwargs)
+            self.right_term_net.f_net = self.f_net
         except ValueError as e:
             raise RuntimeError("class '{}' is not available".format(class_name))
 
-    def forward(self, t, y0):
-        t = t.reshape(-1, 1)
+    def get_q_qt_qtt(self, t, q, qt):
+        yt_hat = self.right_term_net(t, torch.cat([q, qt], dim=-1))
+        qt_hat, qtt_hat, lambdas = torch.tensor_split(
+            yt_hat, (self.config.dof, self.config.dof * 2), dim=-1
+        )
+        return q, qt, qtt_hat
 
-        cp_num = int(t.shape[0] // y0.shape[0])
-        y0_tile = torch.tile(y0, (1, cp_num)).reshape(-1, y0.shape[1])
-
-        input = torch.cat([t, y0_tile], dim=-1)
-        out = self.backboneNet(input)
-        return out
-
-    def get_q_qt_qtt(self, t, y0):
-        q_hat = self(t, y0)
-        qt_hat = batched_jacobian(
-            q_hat, t, device=self.device, dtype=self.dtype
-        ).squeeze(-1)
-        qtt_hat = batched_jacobian(
-            qt_hat, t, device=self.device, dtype=self.dtype
-        ).squeeze(-1)
-        return q_hat, qt_hat, qtt_hat
-
-    def criterion(self, data, *args, **kwargs):
+    def criterion(self, data, current_iterations, *args, **kwargs):
         y0, train_y, train_yt, train_t, physics_t = data
-
         q, qt = torch.chunk(train_y, 2, dim=-1)
         qt, qtt = torch.chunk(train_yt, 2, dim=-1)
+        q, qt, qtt_hat = self.get_q_qt_qtt(train_t, q, qt)
+
+        loss_res = torch.mean((qtt[:,-1] - qtt_hat[:,-1]) ** 2)
 
         ################################
-        # Loss for initial condition (y0)
-        t0 = torch.zeros(y0.shape[0], 1, device=self.device, dtype=self.dtype)
-        t0 = t0.requires_grad_(True)
-        q_hat, qt_hat, qtt_hat = self.get_q_qt_qtt(t0, y0)
-        y0_hat = torch.cat([q_hat, qt_hat], dim=-1)
-        loss_y0 = F.mse_loss(y0_hat, y0)
+        #
+        # log
+        #
         ################################
-
-        ################################
-        # Loss for training data
-        q_hat, qt_hat, qtt_hat = self.get_q_qt_qtt(train_t, y0)
-        loss_data = 0
-        loss_data += F.mse_loss(q_hat, q)
-        loss_data += F.mse_loss(qt_hat, qt)
-        loss_data += F.mse_loss(qtt_hat, qtt)
-
-        loss_data += .5 * F.mse_loss(q_hat[::101], q[::101])
-        loss_data += .5 * F.mse_loss(qt_hat[::101], qt[::101])
-        ################################
-
-        ################################
-        # Loss for physics data
-        q_left_hat, qt_left_hat, qtt_left_hat = self.get_q_qt_qtt(physics_t, y0)
-        yt_right_hat = self.right_term_net(
-            physics_t, torch.cat([q_left_hat, qt_left_hat], dim=-1)
+        flag_output = "============>"
+        current_iterations_output = "{}: {}".format(
+            "current_iterations", current_iterations
         )
-        qt_right_hat, qtt_right_hat, lambdas = torch.tensor_split(
-            yt_right_hat, (self.config.dof, self.config.dof * 2), dim=-1
-        )
-        loss_res = torch.mean((qtt_left_hat - qtt_right_hat) ** 2)
-        ################################
+        loss_res_output = "{}: {:.3e}".format("loss_res", loss_res)
+        keys_values_pairs = [
+            flag_output,
+            current_iterations_output,
+            loss_res_output,
+        ]
+        full_output = "|".join(keys_values_pairs)
+        self.logger.debug(full_output)
 
-        return (
-            self.config.loss_y0_weight * loss_y0
-            + self.config.loss_data_weight * loss_data
-            + self.config.loss_physic_weight * loss_res
-        )
+        return self.config.loss_physic_weight * loss_res
 
     def evaluate(self, data, output_dir="", current_iterations=None, *args, **kwargs):
         ################################
@@ -174,7 +206,7 @@ class PIRNN(nn.Module):
         # Predict using the physics model
         #
         ################################
-        q_hat, qt_hat, qtt_hat = self.get_q_qt_qtt(physics_t, y0)
+        q_hat, qt_hat, qtt_hat = self.get_q_qt_qtt(data_t,q, qt)
 
         ################################
         #
@@ -182,14 +214,12 @@ class PIRNN(nn.Module):
         #
         ################################
         # Calculate mean squared error
-        # mse_error = F.mse_loss(q_hat, q) + F.mse_loss(qt_hat, qt)
+        mse_error = torch.mean((qtt - qtt_hat) ** 2)
 
         # Convert tensors to numpy arrays
         data_t = tensors_to_numpy(data_t)
         q, qt, qtt = tensors_to_numpy(q, qt, qtt)
         q_hat, qt_hat, qtt_hat = tensors_to_numpy(q_hat, qt_hat, qtt_hat)
-
-        mse_error = np.mean((q_hat - q) ** 2) + np.mean((qt_hat - qt) ** 2)
 
         # Calculate energy and other terms using the physics model
         (
@@ -211,20 +241,14 @@ class PIRNN(nn.Module):
         # Plot the error
         #
         ################################
-
-        t0 = 0.
-        t1 = 6.
-        dt = 0.01
-        plot_data_t = np.arange(t0, t1+6*dt, dt)
-
-        plot_dynamics_metrics(
-            config=self.config,
-            pred_data=[q_hat, qt_hat, qtt_hat],
-            gt_data=[q, qt, qtt],
-            t=plot_data_t,
-        )
-        save_path = os.path.join(output_dir, f"iter_{current_iterations}.png")
-        plt.savefig(save_path)
-        plt.close()
+        # plot_dynamics_metrics(
+        #     config=self.config,
+        #     pred_data=[q_hat, qt_hat, qtt_hat],
+        #     gt_data=[q, qt, qtt],
+        #     t=data_t,
+        # )
+        # save_path = os.path.join(output_dir, f"iter_{current_iterations}.png")
+        # plt.savefig(save_path)
+        # plt.close()
 
         return mse_error

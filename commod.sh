@@ -5,7 +5,7 @@ screen -ls
 screen -S training
 screen -D -r training
 screen -S training -X quit
-screen -S 365811 -X quit
+screen -S 229834 -X quit
 
 #############################
 # path 

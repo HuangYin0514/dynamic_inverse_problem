@@ -26,7 +26,7 @@ def parse_data_file(file_path):
     return y0, y, yt, t, t0, t1, dt
 
 
-class DynamicData():
+class DynamicData_UniformSpeed:
     """
     动态数据加载器，用于从数据文件读取数据并准备训练和验证数据。
 
@@ -48,11 +48,13 @@ class DynamicData():
         self.logger = logger
 
         y0, y, yt, t, t0, t1, dt = self._read_data(self.config.dataset_path)
-        train_t, train_y, train_yt, physics_t = self._prepare_train_data(y0, y, yt, t, t0, t1, dt)
+        train_t, train_y, train_yt, physics_t = self._prepare_train_data(
+            y0, y, yt, t, t0, t1, dt
+        )
 
         # 准备训练和验证数据
         train_data = y0, train_y, train_yt, train_t, physics_t
-        val_data = y0, y, yt, t, physics_t
+        val_data = y0, train_y, train_yt, train_t, physics_t
 
         self.data = train_data, val_data
 
@@ -99,16 +101,38 @@ class DynamicData():
         # 选择用于训练的数据
         interval = self.config.interval
         len_t = len(t)
-        train_t = t[0:len_t + 1:interval].copy()
-        train_yt = dy[0:len_t + 1:interval].copy()
-        train_y = y[0:len_t + 1:interval].copy()
+        train_t = t[0 : len_t + 1 : interval].copy()
+
+        q, qt = np.split(y, 2, axis=-1)
+        qt, qtt = np.split(dy, 2, axis=-1)
+
+        t0 = 0.0
+        t1 = 11.0
+        dt = 0.01
+        t = np.arange(t0, t1 + dt, dt)
+
+        increase_values_q = (q[-1] - q[0]) / 1100
+        increase_values_qt = (qt[-1] - qt[0]) / 1100
+        q_list = []
+        qt_list = []
+        for index, ti in enumerate(t):
+            position = q[0] + increase_values_q * index
+            speed = qt[0] + increase_values_qt * index
+            q_list.append(position)
+            qt_list.append(speed)
+
+        new_q = np.array(q_list)
+        new_qt = np.array(qt_list)
+
+        # qt = np.zeros_like(new_q)
+        # qt[1:] = qt[1:] * 0 + 0.5
+        qtt = np.zeros_like(new_q)
+
+        train_y = np.concatenate([new_q, qt], axis=-1).copy()
+        train_yt = np.concatenate([qt, qtt], axis=-1).copy()
 
         # 生成 physics_t
         physics_t = t
+        train_t = t
         # physics_t = train_t
-
-
-        q, qt = np.split(train_y, 2, axis=-1)
-        qt, qtt = np.split(train_yt, 2, axis=-1)
-
         return train_t, train_y, train_yt, physics_t

@@ -9,7 +9,6 @@ from tqdm import tqdm
 
 
 class TrainingManager:
-
     def __init__(
         self,
         data,
@@ -69,9 +68,13 @@ class TrainingManager:
         #                                     betas=(0.9, 0.999))
 
         if optimizer == "adam":
-            self.optimizer_instance = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+            self.optimizer_instance = torch.optim.Adam(
+                self.model.parameters(), lr=learning_rate
+            )
         elif optimizer == "LBFGS":
-            self.optimizer_instance = torch.optim.LBFGS(self.model.parameters(), lr=learning_rate)
+            self.optimizer_instance = torch.optim.LBFGS(
+                self.model.parameters(), lr=learning_rate
+            )
         else:
             raise NotImplementedError
 
@@ -80,7 +83,11 @@ class TrainingManager:
         if scheduler == "no_scheduler":
             self.scheduler_instance = None
         elif scheduler == "StepLR":
-            self.scheduler_instance = torch.optim.lr_scheduler.StepLR(self.optimizer_instance, step_size=int(self.iterations // 5), gamma=0.7)
+            self.scheduler_instance = torch.optim.lr_scheduler.StepLR(
+                self.optimizer_instance,
+                step_size=int(self.config.iterations // 5),
+                gamma=0.7,
+            )
 
     def __initialize_results(self):
         """
@@ -106,49 +113,67 @@ class TrainingManager:
     def run_training(self):
         self.logger.info("Training...")
         loss_history = []
-        pbar = tqdm(range(self.config.iterations + 1), desc="Processing")
+        pbar = tqdm(range(1, self.config.iterations + 1), desc="Processing")
         for iter in pbar:
             # Train ---------------------------------------------------------------
             for batch_data in self.train_loader:
                 loss_temp_list = []
+                F_temp_list = []
+                yi_temp_list = []
+                ti_temp_list = []
                 self.model.train()
 
-                def closure():
-                    loss = self.model.criterion(data=batch_data,current_iterations=iter)
-                    loss_temp_list.append(loss)
-                    if torch.any(torch.isnan(loss)):
-                        self.encounter_nan = True
-                        raise RuntimeError("Encountering nan, stop training")
+                y0 = torch.tensor(
+                    self.config.y0, device=self.config.device, dtype=self.config.dtype
+                ).view(1, -1)
+                ti = torch.zeros(1, device=self.config.device, dtype=self.config.dtype)
+                dt = 0.01
+                yi_temp_list.append(y0.detach().clone().cpu())
+                ti_temp_list.append(ti.detach().clone().cpu())
+                yi_next = y0
+                for i in range(10000):
+                    loss, qt, F, error, yi = self.model.criterion(
+                        y0=yi_next, ti=ti, dt=dt, current_iterations=iter
+                    )
+                    loss_temp_list.append(loss.detach().clone().cpu())
 
-                    self.optimizer_instance.zero_grad()
-                    loss.backward()
-                    return loss
+                    if sum((yi[0, 0:3] - yi[0, 15:18]) * (yi[0, 12:15] - yi[0, 3:6])) < 0:  # 16与52的夹角
+                        print('stop time is ', (ti+dt).cpu().detach().numpy())
+                        break
+                    
+                    if error < 1e-5:
+                        F_temp_list.append(F)
+                        yi_next = yi.detach().clone()
+                        ti = (ti+dt).detach().clone()
+                        self.logger.debug(ti.detach().clone().cpu().numpy())
+                        continue
+                    else:
+                        if torch.any(torch.isnan(loss)):
+                            self.encounter_nan = True
+                            raise RuntimeError("Encountering nan, stop training")
+                                            
+                        self.optimizer_instance.zero_grad()
+                        loss.backward()
+                        self.optimizer_instance.step()
+                    
+                np.save("F_dict11111.bk", F_temp_list)
 
                 if self.config.optimizer == "adam_LBFGS":
                     if iter > self.config.optimize_next_iterations:
                         self.config.optimizer = "adam_LBFGS_next"
                         self.__initialize_optimizer()
 
-                self.optimizer_instance.step(closure)
-                loss = loss_temp_list[-1]
-
-            # Evaluate ---------------------------------------------------------------
-            if iter % self.config.print_every == 0 or iter == self.config.iterations:
-                for batch_data in self.val_loader:
-                    self.model.eval()
-                    val_loss = self.model.evaluate(
-                        data=batch_data,
-                        output_dir=self.evaluate_output_dir,
-                        current_iterations=iter,
-                    )
+            val_loss = 0 * loss
 
             # Record ------------------------------------------------
-            loss_history.append([
-                iter,
-                loss.item(),
-                val_loss.item(),
-                self.optimizer_instance.param_groups[0]["lr"],
-            ])
+            loss_history.append(
+                [
+                    iter,
+                    loss.item(),
+                    val_loss.item(),
+                    self.optimizer_instance.param_groups[0]["lr"],
+                ]
+            )
             postfix = {
                 "Train_loss": "{:.3e}".format(loss.item()),
                 "Val_loss": "{:.3e}".format(val_loss.item()),
@@ -157,12 +182,18 @@ class TrainingManager:
             pbar.set_postfix(postfix)
 
             # Save ---------------------------------------------------------------
-            model_path = os.path.join(self.model_output_dir, "temp_training_model_{}.pkl".format(iter))
+            model_path = os.path.join(
+                self.model_output_dir, "temp_training_model_{}.pkl".format(iter)
+            )
             torch.save(self.model.state_dict(), model_path)
 
-            # LR step ---------------------------------------------------------------
-            if self.scheduler_instance is not None:
-                self.scheduler_instance.step()
+
+
+
+            # # LR step ---------------------------------------------------------------
+            # if self.scheduler_instance is not None:
+            #     if iter < self.config.optimize_next_iterations:
+            #         self.scheduler_instance.step()
 
         self.results["loss_history"] = np.array(loss_history)
 
@@ -178,7 +209,9 @@ class TrainingManager:
 
         loss_history = self.results.get("loss_history")
         if loss_history is None:
-            raise RuntimeError("Cannot restore without loss history. Make sure the 'results' attribute has 'loss_history'.")
+            raise RuntimeError(
+                "Cannot restore without loss history. Make sure the 'results' attribute has 'loss_history'."
+            )
 
         # Find the model with the smallest loss
         best_loss_index = loss_history[:, 1].argmin()
@@ -187,14 +220,27 @@ class TrainingManager:
         loss_test = loss_history[best_loss_index, 2]
 
         # load model
-        filepath = os.path.join(self.model_output_dir, "temp_training_model_{}.pkl".format(iteration))
+        filepath = os.path.join(
+            self.model_output_dir, "temp_training_model_{}.pkl".format(iteration)
+        )
         self.best_model = torch.load(filepath)
 
         # save relevant information
-        contents = ("\n" + "Train completion time: " + time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(time.time())) + "\n" +
-                    "Task name: {}".format(self.config.taskname) + "\n" + "Model name: {}".format(self.model.__class__.__name__) + "\n" +
-                    "Best model at iteration: {}".format(iteration) + "\n" + "Train loss: {:.3e}".format(loss_train) + "\n" +
-                    "Test loss: {:.3e}".format(loss_test))
+        contents = (
+            "\n"
+            + "Train completion time: "
+            + time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime(time.time()))
+            + "\n"
+            + "Task name: {}".format(self.config.taskname)
+            + "\n"
+            + "Model name: {}".format(self.model.__class__.__name__)
+            + "\n"
+            + "Best model at iteration: {}".format(iteration)
+            + "\n"
+            + "Train loss: {:.3e}".format(loss_train)
+            + "\n"
+            + "Test loss: {:.3e}".format(loss_test)
+        )
         self.logger.info(contents)
 
     def output_results(self, info):
@@ -216,7 +262,9 @@ class TrainingManager:
         def save_loss_history_figure(loss_history, fig_path):
             fig = plt.figure()
             ax1 = fig.add_subplot(111)
-            ax1.semilogy(loss_history[:, 0], loss_history[:, 1], "b", label="train loss")
+            ax1.semilogy(
+                loss_history[:, 0], loss_history[:, 1], "b", label="train loss"
+            )
             ax1.semilogy(loss_history[:, 0], loss_history[:, 2], "g", label="test loss")
             ax1.legend(loc=1)
             ax1.set_ylabel("loss")
@@ -250,11 +298,17 @@ class TrainingManager:
 
         # Logs all the attributes and their values present in the given config object.
         if self.config is not None:
-            keys_values_pairs = []  # List to store attribute-name and attribute-value pairs
+            keys_values_pairs = (
+                []
+            )  # List to store attribute-name and attribute-value pairs
             for attr_name in dir(self.config):
                 if not attr_name.startswith("__"):  # Exclude private attributes
-                    attr_value = getattr(self.config, attr_name)  # Get the attribute value
-                    keys_values_pairs.append("{}: {}".format(attr_name, attr_value))  # Store the pair
+                    attr_value = getattr(
+                        self.config, attr_name
+                    )  # Get the attribute value
+                    keys_values_pairs.append(
+                        "{}: {}".format(attr_name, attr_value)
+                    )  # Store the pair
             # Join the attribute-name and attribute-value pairs with newline separator
             full_output = "\n".join(keys_values_pairs)
             # Log the config values

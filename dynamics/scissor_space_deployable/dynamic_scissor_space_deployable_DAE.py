@@ -8696,7 +8696,34 @@ class F_Net(nn.Module):
         )
         F = F.reshape(1, -1).repeat(bs, 1)
 
-        return F
+        # return F
+        bs, num_states = coords.shape
+        t = t.reshape(-1, 1)
+        F_new = torch.zeros(
+            bs, 12 * (self.unitnum + 1), device=self.device, dtype=self.dtype
+        )
+
+        F_f = self.F_f
+        # print(F_f)
+
+        F_new[:, 0:1] = -self.F_a * F_f
+        F_new[:, 1:2] = self.F_a * F_f
+
+        F_new[:, 3:4] = -self.F_a * F_f
+        F_new[:, 4:5] = -self.F_a * F_f
+
+        F_new[:, 6:7] = self.F_a * F_f
+        F_new[:, 7:8] = -self.F_a * F_f
+
+        F_new[:, 9:10] = self.F_a * F_f
+        F_new[:, 10:11] = self.F_a * F_f
+
+        F_new[:, 12 * self.unitnum + 2] = -self.F_r
+        F_new[:, 12 * self.unitnum + 5] = -self.F_r
+        F_new[:, 12 * self.unitnum + 8] = -self.F_r
+        F_new[:, 12 * self.unitnum + 11] = -self.F_r
+
+        return F_new
 
 
 #######################################################################
